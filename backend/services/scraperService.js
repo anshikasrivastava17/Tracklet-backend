@@ -78,8 +78,25 @@ async function scrapeFlipkart(url) {
   await setUserAgentAndBlockResources(page);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-  await page.waitForSelector('.Nx9bqj.CxhGGd', { timeout: 15000 });
-  const price = await page.$eval('.Nx9bqj.CxhGGd', (el) => el.textContent.trim());
+  const selectors = ['.v1zwn20', '.v1zwn21k', '.Nx9bqj.CxhGGd', 'div._30jeq3._16Jk6d', 'div[class*="price"]'];
+  let price = null;
+
+  for (const selector of selectors) {
+    try {
+      await page.waitForSelector(selector, { timeout: 5000 });
+      price = await page.$$eval(selector, (elements) => {
+        for (const el of elements) {
+          const text = el.textContent.trim();
+          // Filter out percentages, only capture valid prices containing ₹
+          if (text.includes('₹') && !text.includes('%')) {
+            return text;
+          }
+        }
+        return null;
+      });
+      if (price) break;
+    } catch (err) {}
+  }
 
   await browser.close();
   return price;
@@ -108,11 +125,12 @@ async function scrapeNykaa(url) {
 
 // Main export
 async function scrapeProductPrice(url) {
-  if (url.includes('amazon')) return await scrapeAmazon(url);
-  else if (url.includes('ajio')) return await scrapeAjio(url);
-  else if (url.includes('flipkart')) return await scrapeFlipkart(url);
-  else if (url.includes('nykaa')) return await scrapeNykaa(url);
-  else throw new Error('Unsupported website');
+  const normalizedUrl = url.toLowerCase();
+  if (normalizedUrl.includes('amazon') || normalizedUrl.includes('amzn.')) return await scrapeAmazon(url);
+  else if (normalizedUrl.includes('ajio')) return await scrapeAjio(url);
+  else if (normalizedUrl.includes('flipkart') || normalizedUrl.includes('fkrt.it')) return await scrapeFlipkart(url);
+  else if (normalizedUrl.includes('nykaa')) return await scrapeNykaa(url);
+  else throw new Error(`Unsupported website: ${url}`);
 }
 
 module.exports = { scrapeProductPrice };

@@ -6,13 +6,12 @@ const productRoutes = require("./routes/productRoutes");
 const monitorRoutes = require("./routes/monitorRoutes");
 const cron = require("node-cron");  
 const { monitorProductsAndScrape } = require("./services/monitorService");
-//const PORT = 3000;
+const PORT = 3000;
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Use routes from tableRoutes.js
 app.use("/auth", authRoutes);
 app.use("/products", productRoutes);
 app.use("/monitor", monitorRoutes);
@@ -30,7 +29,7 @@ app.all('*', (req, res) => {
   });
 });
 
-// Start Cron Job (runs every 1 minute)
+// Start Cron Job (runs every 3 minutes)
 cron.schedule("*/3 * * * *", async () => {
   console.log("🕒 Running scheduled product monitoring...");
   await monitorProductsAndScrape();
@@ -39,13 +38,13 @@ cron.schedule("*/3 * * * *", async () => {
 });
 
 
-// Create AWS Lambda handler
-const server = awsServerlessExpress.createServer(app);
+//Create AWS Lambda handler
+// const server = awsServerlessExpress.createServer(app);
 
-exports.handler = (event, context) => {
-  return awsServerlessExpress.proxy(server, event, context);
-};
+// exports.handler = (event, context) => {
+//   return awsServerlessExpress.proxy(server, event, context);
+// };
 
-// app.listen(PORT, () => {
-//   console.log(`Server is running on http://localhost:${PORT}`);
-// });
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});

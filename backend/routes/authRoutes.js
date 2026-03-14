@@ -1,5 +1,5 @@
 const express = require("express");
-const { signupUser, loginUser } = require("../services/userOperations");
+const { signupUser, loginUser, forgotPassword, resetPassword } = require("../services/userOperations");
 
 const router = express.Router();
 
@@ -30,6 +30,36 @@ router.post("/login", async (req, res) => {
     res.status(200).json(response);
   } catch (err) {
     res.status(err.statusCode || 401).json({ error: err.message });
+  }
+});
+
+// Forgot password route
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    const response = await forgotPassword(email);
+    res.status(200).json(response);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// Reset password route
+router.post("/reset-password", async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: "Email, OTP, and new password are required" });
+    }
+
+    const response = await resetPassword(email, otp, newPassword);
+    res.status(200).json(response);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
