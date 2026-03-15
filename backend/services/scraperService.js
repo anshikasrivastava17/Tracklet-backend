@@ -1,28 +1,32 @@
+// 1. Updated Imports
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+// Note: You must run 'npm install @sparticuz/chromium-min' and 'npm uninstall @sparticuz/chromium'
+const chromium = require('@sparticuz/chromium-min'); 
+
 puppeteer.use(StealthPlugin());
 
-// --- THIS PART IS UPDATED FOR AWS ---
+// 2. Updated launchBrowser Function
 async function launchBrowser(options = {}) {
   const isLambda = process.env.AWS_EXECUTION_ENV !== undefined;
   let browser;
 
   if (isLambda) {
-    const chromium = require('@sparticuz/chromium');
-    // In AWS, we use the chromium-specific settings
+    // --- AWS PRODUCTION SETTINGS (Using Layer) ---
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      // chromium-min automatically finds the binary in /opt/nodejs/node_modules/@sparticuz/chromium/bin
+      executablePath: await chromium.executablePath(), 
       headless: chromium.headless,
       ...options,
     });
   } else {
-    // In Windows, we use your original settings
+    // --- LOCAL WINDOWS SETTINGS ---
     browser = await puppeteer.launch({
       headless: "new", 
       defaultViewport: null, 
-      executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", // Match your local path
+      executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", 
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -38,7 +42,6 @@ async function launchBrowser(options = {}) {
   
   const page = await browser.newPage();
 
-  // Inject a script to wipe the "I am a robot" flag before the page even loads
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', {
       get: () => undefined,
