@@ -1,21 +1,39 @@
-// services/scraperService.js
-const puppeteer = require('puppeteer');
+// Replace the standard puppeteer import with stealth mode
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-// Launch browser and get page
+// Apply the stealth plugin
+puppeteer.use(StealthPlugin());
+
+// Launch browser and get page with ULTIMATE ANTI-BOT settings
 async function launchBrowser(options = {}) {
   const browser = await puppeteer.launch({
-    headless: true,
+    // Use Chrome's brand new headless mode (much harder to detect)
+    headless: "new", 
+    // Force a realistic desktop resolution
+    defaultViewport: null, 
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-http2',
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--no-zygote',
+      '--window-size=1920,1080', 
+      // Master override to hide automation flags
+      '--disable-blink-features=AutomationControlled' 
     ],
     ...options,
   });
+  
   const page = await browser.newPage();
+
+  // Inject a script to wipe the "I am a robot" flag before the page even loads
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+    });
+  });
+
   return { browser, page };
 }
 
@@ -33,77 +51,289 @@ async function setUserAgentAndBlockResources(page) {
 }
 
 // Amazon Scraper
-async function scrapeAmazon(url) {
+const scrapeAmazon = async (url) => {
+  let browser, page;
   try {
-    const { browser, page } = await launchBrowser();
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
+
     await setUserAgentAndBlockResources(page);
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForSelector('.a-price-whole', { timeout: 15000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    const price = await page.$eval('.a-price-whole', (el) => el.textContent.trim());
-    console.log('Amazon Product Price:', price);
+    const priceText = await page.evaluate(() => {
+      let priceElement;
 
-    await browser.close();
-    return price;
+      priceElement = document.querySelector('.apexPriceToPay .a-offscreen');
+      if (priceElement) return priceElement.innerText;
+
+      priceElement = document.querySelector('#corePriceDisplay_desktop_feature_div .a-price-whole');
+      if (priceElement) return priceElement.innerText;
+      
+      priceElement = document.querySelector('#apex_desktop .a-price-whole');
+      if (priceElement) return priceElement.innerText;
+
+      priceElement = document.querySelector('#priceblock_ourprice');
+      if (priceElement) return priceElement.innerText;
+
+      priceElement = document.querySelector('.a-price-whole');
+      if (priceElement) return priceElement.innerText;
+
+      return null; 
+    });
+
+    if (!priceText) {
+      console.log(`⚠️ Could not find any price selectors for URL: ${url}`);
+      return null;
+    }
+
+    return priceText;
+
   } catch (error) {
-    console.error('Error scraping Amazon:', error.message);
+    console.error(`Error scraping Amazon: ${error.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close();
   }
-}
+};
 
 // Ajio Scraper
 async function scrapeAjio(url) {
-  const { browser, page } = await launchBrowser();
-  await setUserAgentAndBlockResources(page);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  let browser, page;
+  try {
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
 
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  const selectors = ['.price .prod-sp', '.prod-sp', '.price-section .price', '[class*="price"]'];
+    // 1. Call the standard, shared setup function first
+    await setUserAgentAndBlockResources(page);
+    
+    // 2. ONLY for Ajio: Inject realistic HTTP headers to look like a human Chrome user
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1'
+    });
 
-  for (const selector of selectors) {
+    // Ajio is a heavy SPA, so we MUST wait for the network to idle
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Add a random delay to simulate human loading time
+    await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
+
+    // Wait until at least one element with a Rupee symbol appears (max 10s)
     try {
-      await page.waitForSelector(selector, { timeout: 5000 });
-      const price = await page.$eval(selector, (el) => el.textContent.trim());
-      await browser.close();
-      return price;
-    } catch (err) {}
-  }
+      await page.waitForFunction(
+        () => document.body.innerText.includes('₹'),
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      console.log("Timed out waiting for Rupee symbol to appear on Ajio.");
+    }
 
-  await browser.close();
+    const priceText = await page.evaluate(() => {
+      // Priority 1: Check the exact classes we know Ajio uses
+      const classes = ['.prod-sp', '.price .prod-sp', '.price-section .price'];
+      for (let selector of classes) {
+        const el = document.querySelector(selector);
+        // Using textContent to bypass headless rendering quirks
+        if (el && el.textContent && el.textContent.includes('₹')) {
+          return el.textContent.trim();
+        }
+      }
+
+      // Priority 2: The "Smart Search" fallback
+      const elements = Array.from(document.querySelectorAll('div, span, p'));
+      const priceRegex = /₹\s?(\d{1,3}(,\d{2,3})*)/; 
+      
+      for (let el of elements) {
+        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent)) {
+           return el.textContent.trim();
+        }
+      }
+
+      return null;
+    });
+
+    if (!priceText) {
+      console.log(`⚠️ Could not find Ajio price selectors for URL: ${url}`);
+      // Take a photograph to see if Ajio is blocking us!
+      await page.screenshot({ path: 'ajio-error.png', fullPage: true });
+      console.log(`📸 Saved debug screenshot to ajio-error.png`);
+      return null;
+    }
+
+    return priceText;
+
+  } catch (error) {
+    console.error(`Error scraping Ajio: ${error.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
 }
 
 // Flipkart Scraper
 async function scrapeFlipkart(url) {
-  const { browser, page } = await launchBrowser();
-  await setUserAgentAndBlockResources(page);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  let browser, page;
+  try {
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
 
-  await page.waitForSelector('.Nx9bqj.CxhGGd', { timeout: 15000 });
-  const price = await page.$eval('.Nx9bqj.CxhGGd', (el) => el.textContent.trim());
+    await setUserAgentAndBlockResources(page);
+    
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-  await browser.close();
-  return price;
+    // Add a 2-second random delay to simulate human loading time
+    await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
+
+    // Wait until at least one element with a Rupee symbol appears (max 10s)
+    try {
+      await page.waitForFunction(
+        () => document.body.innerText.includes('₹'),
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      console.log("Timed out waiting for Rupee symbol to appear.");
+    }
+
+    const priceText = await page.evaluate(() => {
+      // Priority 1: Check the exact classes we've seen
+      const classes = ['.v1zwn21k.v1zwn20', '._1psv1zeb9._1psv1ze0', '.Nx9bqj.CxhGGd', '._30jeq3._16Jk6d', '._1vC4OE._3qQ9m1', '.Nx9bqj'];
+      for (let selector of classes) {
+        const el = document.querySelector(selector);
+        // Using textContent to bypass headless rendering quirks
+        if (el && el.textContent && el.textContent.includes('₹')) {
+          return el.textContent.trim();
+        }
+      }
+
+      // Priority 2: The "Smart Search" fallback
+      const elements = Array.from(document.querySelectorAll('div, span, p'));
+      const priceRegex = /₹\s?(\d{1,3}(,\d{2,3})*)/; 
+      
+      for (let el of elements) {
+        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent)) {
+           return el.textContent.trim();
+        }
+      }
+
+      return null;
+    });
+
+    if (!priceText) {
+      console.log(`⚠️ Could not find Flipkart price selectors for URL: ${url}`);
+      await page.screenshot({ path: 'flipkart-error.png', fullPage: true });
+      console.log(`📸 Saved debug screenshot to flipkart-error.png`);
+      return null;
+    }
+
+    return priceText;
+
+  } catch (error) {
+    console.error(`Error scraping Flipkart: ${error.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
 }
 
 // Nykaa Scraper
 async function scrapeNykaa(url) {
-  const { browser, page } = await launchBrowser();
-  await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1');
-  await page.setRequestInterception(true);
-  page.on('request', (req) => {
-    if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
-      req.abort();
-    } else {
-      req.continue();
+  let browser, page;
+  try {
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
+
+    // Nykaa specifically requires a mobile user agent
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1');
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      // Allowing stylesheets just in case Nykaa's mobile layout relies on them to render text blocks
+      if (['image', 'font', 'media'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    // Wait for network to calm down
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Add a random delay to simulate human loading time
+    await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
+
+    // Wait until at least one element with a Rupee symbol appears (max 10s)
+    try {
+      await page.waitForFunction(
+        () => document.body.innerText.includes('₹'),
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      console.log("Timed out waiting for Rupee symbol to appear on Nykaa.");
     }
-  });
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-  await page.waitForSelector('.css-1byl9fj', { timeout: 15000 });
-  const price = await page.$eval('.css-1byl9fj', (el) => el.textContent.trim());
+    const priceText = await page.evaluate(() => {
+      // Priority 1: Check the exact classes
+      const classes = ['.css-1jczs19', '.css-1byl9fj', '.css-111z9ua'];
+      for (let selector of classes) {
+        // Use querySelectorAll to get ALL matches (both MRP and selling price)
+        const elements = document.querySelectorAll(selector);
+        for (let el of elements) {
+          if (el && el.textContent && el.textContent.includes('₹')) {
+            // Check if this specific element has a strikethrough line
+            const style = window.getComputedStyle(el);
+            if (!style.textDecoration.includes('line-through')) {
+              return el.textContent.trim(); // Return the first one WITHOUT a strikethrough
+            }
+          }
+        }
+      }
 
-  await browser.close();
-  return price;
+      // Priority 2: The "Smart Search" fallback
+      const elements = Array.from(document.querySelectorAll('span, div, p'));
+      const priceRegex = /₹\s?(\d{1,3}(,\d{2,3})*)/; 
+      
+      for (let el of elements) {
+        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent)) {
+           // Apply the exact same strikethrough check to our fallback!
+           const style = window.getComputedStyle(el);
+           if (!style.textDecoration.includes('line-through')) {
+               return el.textContent.trim();
+           }
+        }
+      }
+
+      return null;
+    });
+
+    if (!priceText) {
+      console.log(`⚠️ Could not find Nykaa price selectors for URL: ${url}`);
+      // Take a photograph just in case they have a bot wall too!
+      await page.screenshot({ path: 'nykaa-error.png', fullPage: true });
+      console.log(`📸 Saved debug screenshot to nykaa-error.png`);
+      return null;
+    }
+
+    return priceText;
+
+  } catch (error) {
+    console.error(`Error scraping Nykaa: ${error.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
 }
 
 // Main export

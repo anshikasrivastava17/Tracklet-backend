@@ -6,7 +6,7 @@ const productRoutes = require("./routes/productRoutes");
 const monitorRoutes = require("./routes/monitorRoutes");
 const cron = require("node-cron");  
 const { monitorProductsAndScrape } = require("./services/monitorService");
-//const PORT = 3000;
+const PORT = 3000;
 
 const app = express();
 app.use(express.json());
@@ -46,6 +46,6 @@ exports.handler = (event, context) => {
   return awsServerlessExpress.proxy(server, event, context);
 };
 
-// app.listen(PORT, () => {
-//   console.log(`Server is running on http://localhost:${PORT}`);
-// });
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
