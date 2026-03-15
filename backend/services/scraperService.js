@@ -1,29 +1,40 @@
-// Replace the standard puppeteer import with stealth mode
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
-// Apply the stealth plugin
 puppeteer.use(StealthPlugin());
 
-// Launch browser and get page with ULTIMATE ANTI-BOT settings
+// --- THIS PART IS UPDATED FOR AWS ---
 async function launchBrowser(options = {}) {
-  const browser = await puppeteer.launch({
-    // Use Chrome's brand new headless mode (much harder to detect)
-    headless: "new", 
-    // Force a realistic desktop resolution
-    defaultViewport: null, 
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--window-size=1920,1080', 
-      // Master override to hide automation flags
-      '--disable-blink-features=AutomationControlled' 
-    ],
-    ...options,
-  });
+  const isLambda = process.env.AWS_EXECUTION_ENV !== undefined;
+  let browser;
+
+  if (isLambda) {
+    const chromium = require('@sparticuz/chromium');
+    // In AWS, we use the chromium-specific settings
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ...options,
+    });
+  } else {
+    // In Windows, we use your original settings
+    browser = await puppeteer.launch({
+      headless: "new", 
+      defaultViewport: null, 
+      executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", // Match your local path
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
+        '--window-size=1920,1080', 
+        '--disable-blink-features=AutomationControlled' 
+      ],
+      ...options,
+    });
+  }
   
   const page = await browser.newPage();
 
