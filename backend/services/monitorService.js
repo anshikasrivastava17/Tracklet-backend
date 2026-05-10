@@ -1,10 +1,13 @@
 const docClient = require("../config/dynamoConfig");
-const { scrapeProductPrice } = require("./scraperService"); // Your puppeteer scraper
+const { scrapeProductPrice } = require("./scraperService"); 
 const { saveScrapeResult } = require("./scrapingService");
 const { sendPriceDropAlert } = require("./emailService");
 
 const PRODUCTS_TABLE = "Products";
 
+/**
+ * Fetches all products currently in the DynamoDB table.
+ */
 async function fetchAllTrackedProducts() {
   const params = {
     TableName: PRODUCTS_TABLE,
@@ -19,6 +22,9 @@ async function fetchAllTrackedProducts() {
   }
 }
 
+/**
+ * Updates the NotificationSent flag to true so we don't spam the user.
+ */
 async function updateNotificationSent(productID, userEmail) {
   const params = {
     TableName: PRODUCTS_TABLE,
@@ -40,7 +46,13 @@ async function updateNotificationSent(productID, userEmail) {
   }
 }
 
+/**
+ * Main logic: Scans DB, scrapes prices in chunks, and sends alerts.
+ */
 async function monitorProductsAndScrape() {
+  console.log("🚀 Starting monitoring cycle...");
+  console.log("📌 SEND_EMAILS =", process.env.SEND_EMAILS);
+
   const trackedProducts = await fetchAllTrackedProducts();
 
   if (trackedProducts.length === 0) {
@@ -48,46 +60,69 @@ async function monitorProductsAndScrape() {
     return { message: "No products to monitor." };
   }
 
-  for (const product of trackedProducts) {
-    const { Product_ID, User_Email, Product_URL, Threshold_Value, NotificationSent } = product;
+  const CHUNK_SIZE = 3;
 
-    if (NotificationSent) {
-      console.log(`⏩ Skipping Product_ID ${Product_ID} - notification already sent.`);
-      continue; // Skip if already notified
-    }
+  for (let i = 0; i < trackedProducts.length; i += CHUNK_SIZE) {
+    const chunk = trackedProducts.slice(i, i + CHUNK_SIZE);
+    console.log(`Processing batch ${Math.floor(i / CHUNK_SIZE) + 1}...`);
+    
+    await Promise.all(chunk.map(async (product) => {
+      const { Product_ID, User_Email, Product_URL, Threshold_Value, NotificationSent } = product;
 
-    try {
-      const scrapedPriceStr = await scrapeProductPrice(Product_URL);
-
-      if (!scrapedPriceStr) {
-        console.warn(`⚠️ Failed to scrape product ${Product_ID}`);
-        continue;
+      // Skip if already notified
+      if (NotificationSent === true) {
+        console.log(`⏭️ Skipping ${Product_ID} (already notified)`);
+        return;
       }
 
-      // Clean scraped price: Remove commas and parse to number
-      const numericPrice = parseFloat(scrapedPriceStr.replace(/[^0-9.]/g, ''));
-      if (isNaN(numericPrice)) {
-        console.warn(`⚠️ Scraped price invalid for ${Product_ID}:`, scrapedPriceStr);
-        continue;
+      try {
+        const scrapedPriceStr = await scrapeProductPrice(Product_URL);
+
+        if (!scrapedPriceStr) {
+          console.warn(`⚠️ Could not get price for ${Product_ID}`);
+          return;
+        }
+
+        const numericPrice = parseFloat(
+          scrapedPriceStr.replace(/[^0-9.]/g, '')
+        );
+
+        if (isNaN(numericPrice)) {
+          console.warn(`⚠️ Invalid numeric price for ${Product_ID}: ${scrapedPriceStr}`);
+          return;
+        }
+
+        console.log(`💰 ${Product_ID} price: ${numericPrice} | Threshold: ${Threshold_Value}`);
+
+        // 1. Save price history
+        await saveScrapeResult(Product_ID, User_Email, numericPrice);
+
+        // 2. Check threshold
+        if (numericPrice <= Number(Threshold_Value)) {
+          console.log(`💥 PRICE DROP DETECTED: ${numericPrice} (Threshold: ${Threshold_Value})`);
+
+          // ✅ Controlled email sending
+          if (process.env.SEND_EMAILS === "true") {
+            await sendPriceDropAlert(User_Email, Product_URL, numericPrice);
+            console.log(`📧 Email sent to ${User_Email}`);
+          } else {
+            console.log("📭 Email skipped (SEND_EMAILS=false)");
+          }
+
+          // Mark as notified
+          await updateNotificationSent(Product_ID, User_Email);
+
+        } else {
+          console.log(`✅ ${Product_ID} is stable at ${numericPrice}`);
+        }
+
+      } catch (error) {
+        console.error(`❌ Failed to process Product ${Product_ID}:`, error.message);
       }
-
-      // Save the scrape result (history)
-      await saveScrapeResult(Product_ID, User_Email, numericPrice);
-
-      if (numericPrice <= Threshold_Value) {
-        console.log(`💥 Price drop detected for Product ID ${Product_ID} - Scraped Price: ${numericPrice}`);
-
-        // ✅ Send email
-        await sendPriceDropAlert(User_Email, Product_URL, numericPrice);
-
-        // ✅ Update NotificationSent in Products table
-        await updateNotificationSent(Product_ID, User_Email);
-      }
-    } catch (error) {
-      console.error(`Error monitoring product ${Product_ID}:`, error.message);
-    }
+    }));
   }
 
+  console.log("🏁 Monitoring cycle finished.");
   return { message: "Monitoring completed." };
 }
 

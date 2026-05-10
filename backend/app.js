@@ -1,51 +1,109 @@
+require("dotenv").config();
+
 const express = require("express");
 const awsServerlessExpress = require("aws-serverless-express");
 const cors = require("cors");
+
 const authRoutes = require("./routes/authRoutes");
 const productRoutes = require("./routes/productRoutes");
 const monitorRoutes = require("./routes/monitorRoutes");
-const cron = require("node-cron");  
 const { monitorProductsAndScrape } = require("./services/monitorService");
-//const PORT = 3000;
 
 const app = express();
+
+/* =========================
+   MIDDLEWARE
+========================= */
 app.use(express.json());
 app.use(cors());
 
-// Use routes from tableRoutes.js
+/* =========================
+   ROUTES
+========================= */
 app.use("/auth", authRoutes);
 app.use("/products", productRoutes);
 app.use("/monitor", monitorRoutes);
 
+/* =========================
+   HEALTH CHECK
+========================= */
 app.get("/", (req, res) => {
-  res.send("Hello from AWS lambda");
+  res.send("Backend is running 🚀");
 });
 
-app.all('*', (req, res) => {
-  res.json({
-      message: "Unknown route",
-      path: req.path,
-      method: req.method,
-      headers: req.headers
+/* =========================
+   🧪 LOCAL TEST ROUTE (IMPORTANT)
+========================= */
+app.get("/test-monitor", async (req, res) => {
+  try {
+    console.log("🧪 Manual monitor trigger started...");
+    const result = await monitorProductsAndScrape();
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error in manual trigger:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* =========================
+   CATCH-ALL
+========================= */
+app.all("*", (req, res) => {
+  res.status(404).json({
+    message: "Unknown route",
+    path: req.path,
+    method: req.method,
   });
 });
 
-// Start Cron Job (runs every 1 minute)
-cron.schedule("*/3 * * * *", async () => {
-  console.log("🕒 Running scheduled product monitoring...");
-  await monitorProductsAndScrape();
-}, {
-  timezone: "Asia/Kolkata" // adjust timezone if needed
-});
+/* =========================
+   AWS LAMBDA SETUP
+========================= */
+const isLambda = !!process.env.AWS_EXECUTION_ENV;
 
+let server;
+if (isLambda) {
+  server = awsServerlessExpress.createServer(app);
+}
 
-// Create AWS Lambda handler
-const server = awsServerlessExpress.createServer(app);
+exports.handler = async (event, context) => {
+  // 🕒 EventBridge trigger
+  if (event?.source === "aws.events") {
+    console.log("🕒 EventBridge triggered: Running monitoring...");
+    await monitorProductsAndScrape();
 
-exports.handler = (event, context) => {
-  return awsServerlessExpress.proxy(server, event, context);
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ message: "Monitoring complete" }),
+    };
+  }
+
+  // 🌐 API Gateway
+  return awsServerlessExpress
+    .proxy(server, event, context, "PROMISE")
+    .promise;
 };
 
-// app.listen(PORT, () => {
-//   console.log(`Server is running on http://localhost:${PORT}`);
-// });
+/* =========================
+   LOCAL DEVELOPMENT MODE
+========================= */
+if (!isLambda) {
+  const PORT = process.env.PORT || 3000;
+
+  app.listen(PORT, () => {
+    console.log(`✅ Local server running at http://localhost:${PORT}`);
+  });
+
+  /* =========================
+     OPTIONAL LOCAL CRON
+     Enable only when needed
+  ========================= */
+  if (process.env.ENABLE_LOCAL_CRON === "true") {
+    const cron = require("node-cron");
+
+    cron.schedule("*/5 * * * *", async () => {
+      console.log("⏱️ Local cron triggered...");
+      await monitorProductsAndScrape();
+    });
+  }
+}

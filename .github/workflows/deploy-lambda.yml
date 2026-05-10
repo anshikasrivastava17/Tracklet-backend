@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '22.x'
+          node-version: '20.x'
 
       - name: Install zip
         run: sudo apt-get install zip
@@ -24,11 +24,31 @@ jobs:
       - name: Install dependencies and create lambda.zip
         run: |
           cd backend
-          # Install production dependencies only
-          npm ci --production
-          # Create zip including node_modules
-          zip -r lambda.zip . -x ".env" ".gitignore" "*.DS_Store"
-
+          
+          # 1. Complete wipe of existing lockfiles and modules to ensure no old binaries remain
+          rm -rf node_modules package-lock.json
+          
+          # 2. Install production dependencies
+          npm install --production
+          
+          # 3. CRITICAL: Remove the aws-sdk because AWS Lambda provides it natively in the runtime.
+          # This saves ~50-70MB immediately.
+          npm uninstall aws-sdk
+          
+          # 4. Aggressive Zip: Exclude absolutely everything not needed at runtime
+          zip -rq lambda.zip . -x \
+            ".git/*" \
+            ".github/*" \
+            ".env*" \
+            ".gitignore" \
+            "README.md" \
+            "package-lock.json" \
+            "monitorRunner.js" \
+            "*.png" \
+            "*.jpg" \
+            "node_modules/puppeteer/.local-chromium/*" \
+            "node_modules/@types/*"
+          
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -36,16 +56,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Update Lambda function code
+      - name: Upload to S3 and Update Lambda function code
         run: |
           cd backend
+          aws s3 cp lambda.zip s3://${{ secrets.S3_BUCKET_NAME }}/lambda.zip
+          
           aws lambda update-function-code \
             --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
-            --zip-file fileb://lambda.zip
+            --s3-bucket ${{ secrets.S3_BUCKET_NAME }} \
+            --s3-key lambda.zip
+            
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }}
 
       - name: Redeploy all APIs
         run: |
           aws apigateway create-deployment \
             --rest-api-id ${{ secrets.API_ID }} \
             --stage-name ${{ secrets.API_STAGE }} \
-            --description "Redeploy API after Lambda update"
+            --description "Redeploy API after Lambda update via S3"
