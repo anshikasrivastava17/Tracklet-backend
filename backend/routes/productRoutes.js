@@ -24,7 +24,17 @@ function cleanEcommerceURL(rawUrl) {
       }
     }
     
-    // 2. Strip query parameters for standard sites (Removes ?utm_source=app etc.)
+    // 2. Flipkart (strip affiliate/tracking query params, keep clean path)
+    if (parsedUrl.hostname.includes('flipkart')) {
+      return parsedUrl.origin + parsedUrl.pathname;
+    }
+
+    // 3. Nike (strip query params)
+    if (parsedUrl.hostname.includes('nike.com')) {
+      return parsedUrl.origin + parsedUrl.pathname;
+    }
+
+    // 4. Strip query parameters for standard sites (Removes ?utm_source=app etc.)
     if (
       parsedUrl.hostname.includes('snapdeal') || 
       parsedUrl.hostname.includes('nykaa') || 

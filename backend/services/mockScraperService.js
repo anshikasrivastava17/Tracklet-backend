@@ -35,6 +35,16 @@ const STORE_CONFIG = {
     priceRange: [29, 9999],
     commonPrices: [49, 99, 149, 249, 399, 599, 799, 999, 1499, 1999],
   },
+  flipkart: {
+    name: "Flipkart",
+    priceRange: [149, 99999],
+    commonPrices: [499, 999, 1499, 2999, 4999, 7999, 12999, 19999, 34999, 49999],
+  },
+  nike: {
+    name: "Nike",
+    priceRange: [1495, 24995],
+    commonPrices: [2495, 3495, 4995, 5995, 7495, 8995, 10995, 13995, 16995, 21995],
+  },
 };
 
 /**
