@@ -12,10 +12,47 @@ const { monitorProductsAndScrape } = require("./services/monitorService");
 const app = express();
 
 /* =========================
-   MIDDLEWARE
+   SECURITY MIDDLEWARE
 ========================= */
-app.use(express.json());
-app.use(cors());
+
+// 1. Body size limit — prevents large payload DoS
+app.use(express.json({ limit: "10kb" }));
+
+// 2. Security headers
+app.use((req, res, next) => {
+  // Prevent MIME type sniffing
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  // Prevent clickjacking
+  res.setHeader("X-Frame-Options", "DENY");
+  // XSS protection (legacy browsers)
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  // Don't leak referrer info
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  // Permissions policy
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
+// 3. CORS — restrict to known origins
+const ALLOWED_ORIGINS = [
+  "https://d193b74kfpr98k.cloudfront.net",
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like EventBridge, cron, curl)
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 
 /* =========================
    ROUTES
@@ -107,3 +144,6 @@ if (!isLambda) {
     });
   }
 }
+
+// Export app for testing with supertest
+module.exports = app;

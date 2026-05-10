@@ -2,7 +2,12 @@ const docClient = require("../config/dynamoConfig");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const TABLE_NAME = "Users"; 
-const SECRET_KEY = "your-secret-key"; 
+
+// JWT secret from environment — MUST be set in Lambda env vars and .env locally
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && !process.env.AWS_EXECUTION_ENV) {
+  console.warn("⚠️ WARNING: JWT_SECRET is not set. Auth will fail.");
+}
 
 const signupUser = async ({ name, email, password }) => {
   if (!name || !email || !password) {
@@ -74,7 +79,7 @@ const loginUser = async ({ email, password }) => {
       }
 
       // Generate a JWT token
-      const token = jwt.sign({ email: user.Item.Email }, SECRET_KEY, { expiresIn: "1h" });
+      const token = jwt.sign({ email: user.Item.Email }, JWT_SECRET, { expiresIn: "1h" });
 
       return { message: "Login successful", token };
   } catch (error) {
