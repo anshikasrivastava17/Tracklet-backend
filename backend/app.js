@@ -103,7 +103,7 @@ if (isLambda) {
   server = awsServerlessExpress.createServer(app);
 }
 
-exports.handler = async (event, context) => {
+const handler = async (event, context) => {
   // 🕒 EventBridge trigger
   if (event?.source === "aws.events") {
     console.log("🕒 EventBridge triggered: Running monitoring...");
@@ -147,3 +147,4 @@ if (!isLambda) {
 
 // Export app for testing with supertest
 module.exports = app;
+module.exports.handler = handler;
