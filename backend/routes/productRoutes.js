@@ -24,12 +24,7 @@ function cleanEcommerceURL(rawUrl) {
       }
     }
     
-    // 2. Flipkart (strip affiliate/tracking query params, keep clean path)
-    if (parsedUrl.hostname.includes('flipkart')) {
-      return parsedUrl.origin + parsedUrl.pathname;
-    }
-
-    // 3. Nike (strip query params)
+    // 2. Nike (strip query params)
     if (parsedUrl.hostname.includes('nike.com')) {
       return parsedUrl.origin + parsedUrl.pathname;
     }
