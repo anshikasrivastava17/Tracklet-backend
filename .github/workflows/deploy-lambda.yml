@@ -13,11 +13,23 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: '20.x'
+      - name: Run Handler Smoke Check
+        run: |
+          cd backend
+          node -e "
+            const app = require('./app');
+            if (typeof app.handler !== 'function') {
+              console.error('FATAL: app.handler is not a function. Lambda will fail at runtime.');
+              process.exit(1);
+            }
+            console.log('OK: app.handler is a function.');
+          "
       - name: Run Tests
         run: |
           cd backend
           npm install
           npm test
+
 
   deploy:
     needs: test

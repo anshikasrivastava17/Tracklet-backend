@@ -145,5 +145,8 @@ if (!isLambda) {
   }
 }
 
-// Export app for testing with supertest
+// Export the Express app for testing (supertest) AND expose the Lambda handler.
+// NOTE: module.exports = app would erase exports.handler, so we attach handler
+// directly to the app object instead.
+app.handler = exports.handler;
 module.exports = app;
