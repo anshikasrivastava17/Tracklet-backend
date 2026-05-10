@@ -85,6 +85,30 @@ async function updateNotificationSent(productID, userEmail) {
 }
 
 /**
+ * Reverts the NotificationSent flag to false if email sending fails.
+ */
+async function revertNotificationSent(productID, userEmail) {
+  const params = {
+    TableName: PRODUCTS_TABLE,
+    Key: {
+      Product_ID: productID,
+      User_Email: userEmail,
+    },
+    UpdateExpression: "SET NotificationSent = :sent",
+    ExpressionAttributeValues: {
+      ":sent": false,
+    },
+  };
+
+  try {
+    await docClient.update(params).promise();
+    log('INFO', 'NOTIFICATION_REVERTED', { productId: productID.slice(0, 12) });
+  } catch (error) {
+    log('ERROR', 'NOTIFICATION_REVERT_FAILED', { productId: productID.slice(0, 12), error: error.message });
+  }
+}
+
+/**
  * Detect store name from URL for logging.
  */
 function detectStore(url) {
@@ -215,7 +239,8 @@ async function monitorProductsAndScrape() {
                   log('INFO', 'EMAIL_SENT', { runId, pid, user: User_Email });
                 } catch (emailErr) {
                   log('ERROR', 'EMAIL_FAILED', { runId, pid, user: User_Email, error: emailErr.message });
-                  // If email completely fails, we could revert NotificationSent here
+                  // Revert the flag so the system can try again later
+                  await revertNotificationSent(Product_ID, User_Email);
                 }
               } else {
                 log('INFO', 'EMAIL_SKIPPED', { runId, pid, reason: 'SEND_EMAILS=false' });
