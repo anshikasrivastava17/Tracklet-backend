@@ -608,41 +608,54 @@ async function scrapeFlipkart(url) {
         if (el.children.length === 0) candidates.add(el);
       });
 
-      // Filter to valid non-struck-through price elements
-      const validPrices = Array.from(candidates)
-        .filter(el => {
-          if (!el.textContent || !priceRegex.test(el.textContent.trim())) return false;
-          if (isStrikethrough(el)) return false;
-          return true;
-        })
+      // Collect ALL prices (including struck-through) for debug logging
+      const allPrices = Array.from(candidates)
+        .filter(el => el.textContent && priceRegex.test(el.textContent.trim()))
         .map(el => ({
           text: el.textContent.trim(),
           fontSize: parseFloat(window.getComputedStyle(el).fontSize) || 0,
+          strikethrough: isStrikethrough(el),
+          tag: el.tagName,
+          fontAttr: el.getAttribute('font') || '',
         }));
 
-      if (validPrices.length === 0) return null;
+      // Filter to valid non-struck-through price elements
+      const validPrices = allPrices.filter(p => !p.strikethrough);
+
+      if (validPrices.length === 0) {
+        return { winner: null, debug: allPrices };
+      }
 
       // Pick the price with the LARGEST font-size
-      // The selling price is always the biggest text on the PDP
-      // Coupon/effective prices are smaller text below
       validPrices.sort((a, b) => b.fontSize - a.fontSize);
 
       const winner = validPrices[0];
       return {
-        price: winner.text,
-        selector: 'largest-font (' + winner.fontSize + 'px, ' + validPrices.length + ' candidates)',
+        winner: {
+          price: winner.text,
+          selector: 'largest-font (' + winner.fontSize + 'px, ' + validPrices.length + ' candidates)',
+        },
+        debug: allPrices,
       };
     });
 
+    // Debug: log ALL prices the browser saw
+    log('INFO', store, 'All prices found on page', {
+      pid,
+      prices: priceResult ? priceResult.debug : [],
+    });
+
+    const finalResult = priceResult ? priceResult.winner : null;
+
     const elapsed = Date.now() - startTime;
 
-    if (!priceResult) {
+    if (!finalResult) {
       log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
       return null;
     }
 
-    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
-    return priceResult.price;
+    log('INFO', store, 'Price extracted', { pid, price: finalResult.price, selector: finalResult.selector, elapsedMs: elapsed });
+    return finalResult.price;
 
   } catch (error) {
     log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
