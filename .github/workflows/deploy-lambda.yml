@@ -21,12 +21,14 @@ jobs:
         run: |
           cd backend
           node -e "
+            process.env.NODE_ENV = 'test';
             const app = require('./app');
             if (typeof app.handler !== 'function') {
               console.error('FATAL: app.handler is not a function. Lambda will fail at runtime.');
               process.exit(1);
             }
             console.log('OK: app.handler is a function.');
+            process.exit(0);
           "
       - name: Run Tests
         run: |
