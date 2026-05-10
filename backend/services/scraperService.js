@@ -592,59 +592,46 @@ async function scrapeFlipkart(url) {
 
       const priceRegex = /^₹\s?\d{1,3}(,\d{2,3})*/;
 
-      // Strategy 1: Flipkart's stable font attribute (survives class obfuscation)
-      // The selling price element uses font="default-fk-font-m" or similar fk-font attributes
-      const fontEls = document.querySelectorAll('[font*="fk-font"]');
-      for (const el of fontEls) {
-        if (el.textContent && el.textContent.includes('₹') && !isStrikethrough(el)) {
-          const text = el.textContent.trim();
-          if (priceRegex.test(text)) {
-            return { price: text, selector: 'font-attr' };
-          }
-        }
-      }
+      // Collect ALL candidate price elements from multiple sources
+      const candidates = new Set();
 
-      // Strategy 2: Known class selectors (may work on older Flipkart layouts)
-      const selectors = [
-        ['div.Nx9bqj.CxhGGd', 'Nx9bqj CxhGGd'],
-        ['div.Nx9bqj', 'Nx9bqj'],
-        ['div._30jeq3._16Jk6d', '_30jeq3 _16Jk6d'],
-        ['div._30jeq3', '_30jeq3'],
-      ];
+      // Source 1: Flipkart font attribute elements
+      document.querySelectorAll('[font*="fk-font"]').forEach(el => candidates.add(el));
 
-      for (const [selector, label] of selectors) {
-        const elements = document.querySelectorAll(selector);
-        for (const el of elements) {
-          if (el && el.textContent && el.textContent.includes('₹') && !isStrikethrough(el)) {
-            return { price: el.textContent.trim(), selector: label };
-          }
-        }
-      }
+      // Source 2: Known legacy class selectors
+      ['div.Nx9bqj', 'div._30jeq3'].forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => candidates.add(el));
+      });
 
-      // Strategy 3: Font-size heuristic — the selling price is the LARGEST
-      // non-struck-through ₹ element on the page
-      const allPriceEls = Array.from(document.querySelectorAll('span, div'))
+      // Source 3: All leaf span/div elements with price text
+      document.querySelectorAll('span, div').forEach(el => {
+        if (el.children.length === 0) candidates.add(el);
+      });
+
+      // Filter to valid non-struck-through price elements
+      const validPrices = Array.from(candidates)
         .filter(el => {
           if (!el.textContent || !priceRegex.test(el.textContent.trim())) return false;
-          if (el.children.length > 0) return false;
           if (isStrikethrough(el)) return false;
-          // Exclude EMI, offer, coupon text
-          const parent = el.closest('[class*="emi"], [class*="coupon"], [class*="offer"], [class*="bank"]');
-          if (parent) return false;
           return true;
         })
         .map(el => ({
-          el,
-          fontSize: parseFloat(window.getComputedStyle(el).fontSize) || 0,
           text: el.textContent.trim(),
-        }))
-        .sort((a, b) => b.fontSize - a.fontSize);
+          fontSize: parseFloat(window.getComputedStyle(el).fontSize) || 0,
+        }));
 
-      if (allPriceEls.length > 0) {
-        return { price: allPriceEls[0].text, selector: `font-size-heuristic (${allPriceEls[0].fontSize}px)` };
-      }
+      if (validPrices.length === 0) return null;
 
-      return null;
+      // Pick the price with the LARGEST font-size
+      // The selling price is always the biggest text on the PDP
+      // Coupon/effective prices are smaller text below
+      validPrices.sort((a, b) => b.fontSize - a.fontSize);
+
+      const winner = validPrices[0];
+      return {
+        price: winner.text,
+        selector: 'largest-font (' + winner.fontSize + 'px, ' + validPrices.length + ' candidates)',
+      };
     });
 
     const elapsed = Date.now() - startTime;
