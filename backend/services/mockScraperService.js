@@ -111,7 +111,7 @@ async function scrapeProductPrice(url) {
   await new Promise((r) => setTimeout(r, delay));
 
   // 5% chance of simulating a scrape failure (realistic — sites sometimes block)
-  if (Math.random() < 0.05) {
+  if (process.env.NODE_ENV !== "test" && Math.random() < 0.05) {
     console.log(`🧪 MOCK: Simulated scrape failure for ${storeName} (5% chance)`);
     return null;
   }

@@ -124,7 +124,7 @@ const handler = async (event, context) => {
 /* =========================
    LOCAL DEVELOPMENT MODE
 ========================= */
-if (!isLambda) {
+if (!isLambda && process.env.NODE_ENV !== "test") {
   const PORT = process.env.PORT || 3000;
 
   app.listen(PORT, () => {
