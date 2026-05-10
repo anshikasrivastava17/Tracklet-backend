@@ -113,6 +113,8 @@ async function revertNotificationSent(productID, userEmail) {
  */
 function detectStore(url) {
   if (url.includes('amazon')) return 'Amazon';
+  if (url.includes('flipkart')) return 'Flipkart';
+  if (url.includes('nike.com')) return 'Nike';
   if (url.includes('nykaa')) return 'Nykaa';
   if (url.includes('snapdeal')) return 'Snapdeal';
   if (url.includes('reliancedigital')) return 'RelianceDigital';

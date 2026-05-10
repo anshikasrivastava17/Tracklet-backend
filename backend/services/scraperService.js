@@ -535,11 +535,244 @@ async function scrapeNykaa(url) {
 }
 
 /* ================================================================
+   FLIPKART SCRAPER
+   - Flipkart heavily relies on server-side rendering, so prices
+     are usually in the initial HTML.
+   - The selling price is in a div with class "Nx9bqj CxhGGd"
+     or "_30jeq3 _16Jk6d" (older layout).
+   - MRP is struck through with class "_3I9_wc _2p6lqe" or similar.
+   ================================================================ */
+
+async function scrapeFlipkart(url) {
+  const store = 'Flipkart';
+  const pid = shortId(url);
+  const startTime = Date.now();
+  let browser, page;
+
+  try {
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
+
+    log('INFO', store, 'Browser launched', { pid });
+
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
+
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (['image', 'font', 'media'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    const navStart = Date.now();
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
+
+    // Wait for price elements to render
+    await new Promise(r => setTimeout(r, 2000));
+
+    const priceResult = await page.evaluate(() => {
+      function isStrikethrough(el) {
+        let current = el;
+        for (let i = 0; i < 4; i++) {
+          if (!current) break;
+          const style = window.getComputedStyle(current);
+          if (style.textDecoration.includes('line-through') ||
+              style.textDecorationLine.includes('line-through')) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      }
+
+      // Priority 1: Flipkart's current layout selling price selectors
+      const selectors = [
+        ['div.Nx9bqj.CxhGGd', 'Nx9bqj CxhGGd'],          // New Flipkart PDP
+        ['div.Nx9bqj', 'Nx9bqj'],                          // Alternate new layout
+        ['div._30jeq3._16Jk6d', '_30jeq3 _16Jk6d'],        // Older Flipkart PDP
+        ['div._30jeq3', '_30jeq3'],                          // Generic old layout
+        ['div._25b18c .CEmiEU span', 'CEmiEU span'],        // Another variant
+      ];
+
+      for (const [selector, label] of selectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          if (el && el.textContent && el.textContent.includes('₹') && !isStrikethrough(el)) {
+            return { price: el.textContent.trim(), selector: label };
+          }
+        }
+      }
+
+      // Priority 2: Regex fallback — find ₹X,XXX in leaf nodes
+      const allElements = Array.from(document.querySelectorAll('span, div'));
+      const priceRegex = /^₹\s?\d{1,3}(,\d{2,3})*/;
+
+      for (const el of allElements) {
+        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent.trim())) {
+          if (!isStrikethrough(el)) {
+            return { price: el.textContent.trim(), selector: 'regex-fallback' };
+          }
+        }
+      }
+
+      return null;
+    });
+
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
+      return null;
+    }
+
+    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
+    return priceResult.price;
+
+  } catch (error) {
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+/* ================================================================
+   NIKE SCRAPER
+   - Nike India (nike.com/in) is a React SPA that renders prices
+     dynamically.
+   - The selling price appears in elements with
+     data-testid="currentPrice-container" or class "css-1emn094".
+   - MRP/crossed-out price uses data-testid="initialPrice-container".
+   ================================================================ */
+
+async function scrapeNike(url) {
+  const store = 'Nike';
+  const pid = shortId(url);
+  const startTime = Date.now();
+  let browser, page;
+
+  try {
+    const browserInstance = await launchBrowser();
+    browser = browserInstance.browser;
+    page = browserInstance.page;
+
+    log('INFO', store, 'Browser launched', { pid });
+
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
+
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      // Allow stylesheets since Nike's React app needs them for layout
+      if (['image', 'font', 'media'].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    const navStart = Date.now();
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
+
+    // Nike is a React SPA — give it extra time to hydrate
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Wait for price to appear on page
+    try {
+      await page.waitForFunction(
+        () => document.body.innerText.includes('₹') || document.body.innerText.includes('MRP'),
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      log('WARN', store, 'Timed out waiting for price text', { pid });
+    }
+
+    const priceResult = await page.evaluate(() => {
+      function isStrikethrough(el) {
+        let current = el;
+        for (let i = 0; i < 4; i++) {
+          if (!current) break;
+          const style = window.getComputedStyle(current);
+          if (style.textDecoration.includes('line-through') ||
+              style.textDecorationLine.includes('line-through')) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      }
+
+      // Priority 1: Nike's data-testid selectors (most reliable)
+      const currentPriceEl = document.querySelector('[data-testid="currentPrice-container"]');
+      if (currentPriceEl && currentPriceEl.textContent && currentPriceEl.textContent.includes('₹')) {
+        return { price: currentPriceEl.textContent.trim(), selector: 'data-testid=currentPrice-container' };
+      }
+
+      // Priority 2: Known CSS class selectors for Nike India PDP
+      const selectors = [
+        ['#pdp_product_title + div [data-testid="currentPrice-container"]', 'pdp currentPrice'],
+        ['.product-price__wrapper .product-price', 'product-price__wrapper'],
+        ['.headline-5.pb1-sm.d-sm-ib', 'headline-5 price'],
+        ['.css-1emn094', 'css-1emn094'],
+        ['.css-s56yt7', 'css-s56yt7'],
+      ];
+
+      for (const [selector, label] of selectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          if (el && el.textContent && el.textContent.includes('₹') && !isStrikethrough(el)) {
+            return { price: el.textContent.trim(), selector: label };
+          }
+        }
+      }
+
+      // Priority 3: Regex fallback — find "MRP : ₹X,XXX" or standalone "₹X,XXX"
+      const allElements = Array.from(document.querySelectorAll('span, div, p'));
+      const priceRegex = /(?:MRP\s*:\s*)?₹\s?\d{1,3}(,\d{2,3})*/;
+
+      for (const el of allElements) {
+        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent.trim())) {
+          if (!isStrikethrough(el) && !el.textContent.toLowerCase().includes('off')) {
+            return { price: el.textContent.trim(), selector: 'regex-fallback' };
+          }
+        }
+      }
+
+      return null;
+    });
+
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
+      return null;
+    }
+
+    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
+    return priceResult.price;
+
+  } catch (error) {
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+/* ================================================================
    MAIN DISPATCHER
    ================================================================ */
 
 async function scrapeProductPrice(url) {
   if (url.includes('amazon')) return await scrapeAmazon(url);
+  else if (url.includes('flipkart')) return await scrapeFlipkart(url);
+  else if (url.includes('nike.com')) return await scrapeNike(url);
   else if (url.includes('nykaa')) return await scrapeNykaa(url);
   else if (url.includes('snapdeal')) return await scrapeSnapdeal(url);
   else if (url.includes('reliancedigital')) return await scrapeRelianceDigital(url);
