@@ -41,6 +41,7 @@ const getUserProducts = async (userEmail) => {
 
   const params = {
     TableName: TABLE_NAME,
+    IndexName: GSI_NAME,
     KeyConditionExpression: "User_Email = :email",
     ExpressionAttributeValues: {
       ":email": userEmail,

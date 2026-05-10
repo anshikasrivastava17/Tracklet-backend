@@ -5,6 +5,9 @@ const {
   removeUserFromProduct,
   deleteProductIfUnused,
 } = require("../services/productOperation");
+const { authenticate } = require("../middleware/auth");
+const { validateTrackInput } = require("../middleware/validate");
+const { productLimiter } = require("../middleware/rateLimiter");
 
 const router = express.Router();
 
@@ -38,13 +41,12 @@ function cleanEcommerceURL(rawUrl) {
   }
 }
 
-// Add a product tracking entry
-router.post("/track", async (req, res) => {
-  const { email, productURL, threshold, timeout } = req.body;
+// Add a product tracking entry (Protected, Validated, Rate limited)
+router.post("/track", authenticate, productLimiter, validateTrackInput, async (req, res) => {
+  const { productURL, threshold, timeout } = req.body;
+  const email = req.user.email; // Extracted securely from JWT
 
-  if (!email || !productURL || threshold == null || timeout == null) {
-    return res.status(400).json({ error: "Missing required fields: email, productURL, threshold, timeout" });
-  }
+  // validateTrackInput middleware handles the field checks, so we can proceed directly.
 
   // 🧹 Clean the URL to avoid bot-detection and messy tracking parameters
   const cleanedURL = cleanEcommerceURL(productURL);
@@ -64,13 +66,10 @@ router.post("/track", async (req, res) => {
   }
 });
 
-// Get all products tracked by a user
-router.get("/user-products", async (req, res) => {
-  const { email } = req.query;
-
-  if (!email) {
-    return res.status(400).json({ error: "Email is required." });
-  }
+// Get all products tracked by a user (Protected, Rate limited)
+router.get("/user-products", authenticate, productLimiter, async (req, res) => {
+  // Ignore query param, use the secure email from JWT
+  const email = req.user.email;
 
   try {
     const products = await getUserProducts(email);
@@ -81,12 +80,13 @@ router.get("/user-products", async (req, res) => {
   }
 });
 
-// Remove user from product & attempt cleanup if no users left
-router.delete("/remove-user", async (req, res) => {
-  const { email, productID } = req.body;
+// Remove user from product & attempt cleanup if no users left (Protected, Rate limited)
+router.delete("/remove-user", authenticate, productLimiter, async (req, res) => {
+  const { productID } = req.body;
+  const email = req.user.email; // Use secure email from JWT
 
-  if (!email || !productID) {
-    return res.status(400).json({ error: "Both email and productID are required." });
+  if (!productID) {
+    return res.status(400).json({ error: "productID is required." });
   }
 
   try {

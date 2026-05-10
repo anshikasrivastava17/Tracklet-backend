@@ -6,7 +6,21 @@ on:
       - main
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20.x'
+      - name: Run Tests
+        run: |
+          cd backend
+          npm install
+          npm test
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -46,6 +60,7 @@ jobs:
             "monitorRunner.js" \
             "*.png" \
             "*.jpg" \
+            "tests/*" \
             "node_modules/puppeteer/.local-chromium/*" \
             "node_modules/@types/*"
           

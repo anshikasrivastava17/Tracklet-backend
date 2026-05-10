@@ -8,6 +8,51 @@ const chromium = require('@sparticuz/chromium');
 
 puppeteer.use(StealthPlugin());
 
+/* ================================================================
+   STRUCTURED LOGGER
+   - JSON format for CloudWatch Logs Insights queries
+   - Every log includes store, productId (short hash), and timing
+   ================================================================ */
+
+function log(level, store, message, meta = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    store,
+    message,
+    ...meta,
+  };
+  if (level === 'ERROR') {
+    console.error(JSON.stringify(entry));
+  } else if (level === 'WARN') {
+    console.warn(JSON.stringify(entry));
+  } else {
+    console.log(JSON.stringify(entry));
+  }
+}
+
+/**
+ * Extract a short product identifier from a URL for readable logs.
+ * Amazon: ASIN, Others: last path segment.
+ */
+function shortId(url) {
+  try {
+    const parsed = new URL(url);
+    // Amazon ASIN
+    const asinMatch = parsed.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if (asinMatch) return asinMatch[1];
+    // Last meaningful path segment
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1]?.slice(0, 20) || parsed.hostname;
+  } catch {
+    return url.slice(0, 30);
+  }
+}
+
+/* ================================================================
+   BROWSER LAUNCH
+   ================================================================ */
+
 async function launchBrowser(options = {}) {
   const isLambda = process.env.AWS_EXECUTION_ENV !== undefined;
 
@@ -68,105 +113,196 @@ async function setUserAgentAndBlockResources(page) {
   });
 }
 
-// AMAZON SCRAPER (FULL OPTIMIZED VERSION)
+/* ================================================================
+   AMAZON SCRAPER
+   - Sets delivery pincode to normalize location-based pricing
+   - Filters out struck-through MRP prices
+   - Logs exactly which selector matched
+   ================================================================ */
 
 const scrapeAmazon = async (url) => {
+  const store = 'Amazon';
+  const pid = shortId(url);
+  const startTime = Date.now();
   let browser, page;
 
   try {
-    // Note: Assumes launchBrowser() is defined elsewhere in your file
     const browserInstance = await launchBrowser();
     browser = browserInstance.browser;
     page = browserInstance.page;
 
-    // 1. Force a strict Desktop environment to prevent mobile DOM or default location routing
+    log('INFO', store, 'Browser launched', { pid });
+
+    // 1. Force a strict Desktop environment
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // 2. Call your existing resource blocker to save memory and speed up load times
+    // 2. Block unnecessary resources
     await setUserAgentAndBlockResources(page);
 
+    // 3. Navigate
+    const navStart = Date.now();
     await page.goto(url, {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
+    log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
 
-    // Wait for dynamic content to load in the Buy Box
+    // 4. Set delivery pincode to normalize location-based pricing
+    try {
+      // Click the delivery location widget
+      const locationWidget = await page.$('#glow-ingress-block, #nav-global-location-popover-link');
+      if (locationWidget) {
+        await locationWidget.click();
+        await new Promise(r => setTimeout(r, 1500));
+
+        // Type pincode
+        const pincodeInput = await page.$('#GLUXZipUpdateInput');
+        if (pincodeInput) {
+          await pincodeInput.click({ clickCount: 3 }); // Select existing text
+          await pincodeInput.type('110001', { delay: 50 });
+          
+          // Click Apply
+          const applyBtn = await page.$('#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate .a-button-input');
+          if (applyBtn) {
+            await applyBtn.click();
+            await new Promise(r => setTimeout(r, 2000));
+            log('INFO', store, 'Pincode set to 110001', { pid });
+          }
+        }
+        
+        // Close any remaining popover
+        const closeBtn = await page.$('.a-popover-footer button, #GLUXConfirmClose');
+        if (closeBtn) await closeBtn.click();
+        
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch (pinErr) {
+      log('WARN', store, 'Could not set pincode (non-fatal)', { pid, error: pinErr.message });
+    }
+
+    // 5. Wait for dynamic content to load in the Buy Box
     await new Promise(r => setTimeout(r, 3000));
 
-    // 3. Debugging: Grab the title so we know exactly what product the bot is looking at in CloudWatch
+    // 6. Debugging: Grab the title
     const title = await page.evaluate(() => {
       const titleEl = document.querySelector('#productTitle');
       return titleEl ? titleEl.innerText.trim() : 'Unknown Title';
     });
-    console.log(`🤖 Bot sees Title: ${title}`);
+    log('INFO', store, 'Product identified', { pid, title: title.slice(0, 80) });
 
-    // 4. Extract the exact Buy Box price safely using refined safe-zone selectors
-    const priceText = await page.evaluate(() => {
-      let priceElement;
+    // 7. Extract the SELLING price (not MRP) using refined selectors
+    const priceResult = await page.evaluate(() => {
+      /**
+       * Helper: Check if an element or its parent has a strikethrough
+       * (indicating it's the old MRP, not the selling price)
+       */
+      function isStrikethrough(el) {
+        let current = el;
+        for (let i = 0; i < 4; i++) { // Walk up 4 levels max
+          if (!current) break;
+          const style = window.getComputedStyle(current);
+          if (style.textDecoration.includes('line-through') || 
+              style.textDecorationLine.includes('line-through')) {
+            return true;
+          }
+          // Also check for Amazon's explicit "a-text-strike" class
+          if (current.classList && current.classList.contains('a-text-strike')) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      }
 
-      // ✅ Priority 1: Strict Desktop Buy Box 
-      priceElement = document.querySelector('#corePriceDisplay_desktop_feature_div .a-price-whole');
-      if (priceElement) return priceElement.innerText;
+      /**
+       * Try a selector, but only return it if it's NOT struck through.
+       * Returns { price, selector } or null.
+       */
+      function trySelector(selector, label) {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          if (el && el.innerText && el.innerText.trim() && !isStrikethrough(el)) {
+            return { price: el.innerText.trim(), selector: label };
+          }
+        }
+        return null;
+      }
 
-      // ✅ Priority 2: Alternative Desktop container
-      priceElement = document.querySelector('#apex_desktop .a-price-whole');
-      if (priceElement) return priceElement.innerText;
+      // Priority order — strict desktop Buy Box selectors only
+      const selectors = [
+        ['#corePriceDisplay_desktop_feature_div .a-price:not(.a-text-price) .a-price-whole', 'corePriceDisplay_desktop (non-MRP)'],
+        ['#corePriceDisplay_desktop_feature_div .a-price-whole', 'corePriceDisplay_desktop'],
+        ['#apex_desktop .a-price:not(.a-text-price) .a-price-whole', 'apex_desktop (non-MRP)'],
+        ['#apex_desktop .a-price-whole', 'apex_desktop'],
+        ['#centerCol .a-price:not(.a-text-price) .a-price-whole', 'centerCol (non-MRP)'],
+        ['#rightCol .a-price:not(.a-text-price) .a-price-whole', 'rightCol (non-MRP)'],
+        ['#priceblock_dealprice', 'priceblock_dealprice'],
+        ['#priceblock_ourprice', 'priceblock_ourprice'],
+      ];
 
-      // ✅ Priority 3: The Center Column (Very Safe)
-      // This is the middle of the page with the title and bullets. 
-      // It completely ignores the "Sponsored" rows at the bottom.
-      priceElement = document.querySelector('#centerCol .a-price-whole');
-      if (priceElement) return priceElement.innerText;
+      for (const [sel, label] of selectors) {
+        const result = trySelector(sel, label);
+        if (result) return result;
+      }
 
-      // ✅ Priority 4: The Right Column (The actual Buy Box panel)
-      priceElement = document.querySelector('#rightCol .a-price-whole');
-      if (priceElement) return priceElement.innerText;
-
-      // ✅ Priority 5: Legacy Amazon Desktop Layouts
-      priceElement = document.querySelector('#priceblock_ourprice');
-      if (priceElement) return priceElement.innerText;
-
-      priceElement = document.querySelector('#priceblock_dealprice');
-      if (priceElement) return priceElement.innerText;
-
-      // No broad fallback regex allowed here to prevent grabbing sponsored prices
       return null;
     });
 
-    if (!priceText) {
-      console.log(`⚠️ Could not find exact desktop buy-box price for URL: ${url}`);
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, title: title.slice(0, 50), elapsedMs: elapsed });
       return null;
     }
 
-    console.log(`💰 Amazon price found: ${priceText}`);
-    return priceText;
+    log('INFO', store, 'Price extracted', {
+      pid,
+      price: priceResult.price,
+      selector: priceResult.selector,
+      title: title.slice(0, 50),
+      elapsedMs: elapsed,
+    });
+
+    return priceResult.price;
 
   } catch (error) {
-    console.error(`❌ Error scraping Amazon: ${error.message}`);
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
     return null;
   } finally {
     if (browser) await browser.close();
   }
 };
 
-// --- NEW: Snapdeal Scraper ---
+/* ================================================================
+   SNAPDEAL SCRAPER
+   ================================================================ */
+
 async function scrapeSnapdeal(url) {
+  const store = 'Snapdeal';
+  const pid = shortId(url);
+  const startTime = Date.now();
   let browser, page;
+
   try {
     const browserInstance = await launchBrowser();
     browser = browserInstance.browser;
     page = browserInstance.page;
 
+    log('INFO', store, 'Browser launched', { pid });
+
     await setUserAgentAndBlockResources(page);
     
+    const navStart = Date.now();
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
+
     await new Promise(r => setTimeout(r, 2000)); // Human delay
 
-    const priceText = await page.evaluate(() => {
+    const priceResult = await page.evaluate(() => {
       // Priority 1: Snapdeal's standard price class
       const el = document.querySelector('.payBlkBig');
-      if (el && el.textContent) return el.textContent.trim();
+      if (el && el.textContent) return { price: el.textContent.trim(), selector: '.payBlkBig' };
 
       // Priority 2: Smart Search Fallback
       const elements = Array.from(document.querySelectorAll('span, div'));
@@ -174,33 +310,46 @@ async function scrapeSnapdeal(url) {
       
       for (let el of elements) {
         if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent.trim())) {
-           return el.textContent.trim();
+           return { price: el.textContent.trim(), selector: 'regex-fallback' };
         }
       }
       return null;
     });
 
-    if (!priceText) {
-      console.log(`⚠️ Could not find Snapdeal price for: ${url}`);
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
       return null;
     }
 
-    return priceText;
+    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
+    return priceResult.price;
+
   } catch (error) {
-    console.error(`❌ Error scraping Snapdeal: ${error.message}`);
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
     return null;
   } finally {
     if (browser) await browser.close();
   }
 }
 
-// --- BULLETPROOF: Reliance Digital Scraper ---
+/* ================================================================
+   RELIANCE DIGITAL SCRAPER
+   ================================================================ */
+
 async function scrapeRelianceDigital(url) {
+  const store = 'RelianceDigital';
+  const pid = shortId(url);
+  const startTime = Date.now();
   let browser, page;
+
   try {
     const browserInstance = await launchBrowser();
     browser = browserInstance.browser;
     page = browserInstance.page;
+
+    log('INFO', store, 'Browser launched', { pid });
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
@@ -215,12 +364,13 @@ async function scrapeRelianceDigital(url) {
       }
     });
     
-    // 🚀 THE NUCLEAR OPTION: Try to load, but ignore timeouts
+    // Try to load, but ignore timeouts
+    const navStart = Date.now();
     try {
-      // Cut timeout to 30s. If it hangs past this, we force it to move on.
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
     } catch (e) {
-      console.log("⚠️ page.goto timed out, but proceeding to check for the price anyway...");
+      log('WARN', store, 'page.goto timed out, proceeding anyway', { pid, loadTimeMs: Date.now() - navStart });
     }
 
     // Give Vue.js a few seconds to inject the price into the HTML
@@ -229,22 +379,22 @@ async function scrapeRelianceDigital(url) {
     try {
       await page.waitForSelector('.product-price', { timeout: 10000 });
     } catch (e) {
-      console.log("⚠️ Timed out waiting for .product-price to appear on Reliance Digital.");
+      log('WARN', store, 'Timed out waiting for .product-price selector', { pid });
     }
 
-    const priceText = await page.evaluate(() => {
+    const priceResult = await page.evaluate(() => {
       // Priority 1: The exact class from the Vue.js frontend
       const semanticSelectors = [
-        '.product-price',
-        '.pdp__priceSection__priceListText', 
-        '.pdp__priceSection__priceListTextString'
+        ['.product-price', '.product-price'],
+        ['.pdp__priceSection__priceListText', '.pdp__priceSection__priceListText'], 
+        ['.pdp__priceSection__priceListTextString', '.pdp__priceSection__priceListTextString']
       ];
       
-      for (let selector of semanticSelectors) {
+      for (let [selector, label] of semanticSelectors) {
         const elements = document.querySelectorAll(selector);
         for (let el of elements) {
           if (el && el.textContent && el.textContent.includes('₹')) {
-            return el.textContent.trim();
+            return { price: el.textContent.trim(), selector: label };
           }
         }
       }
@@ -256,38 +406,47 @@ async function scrapeRelianceDigital(url) {
       for (let el of elements) {
         if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent)) {
            if (!el.textContent.toLowerCase().includes('mo') && !el.closest('.emi-block')) {
-               return el.textContent.trim();
+               return { price: el.textContent.trim(), selector: 'regex-fallback' };
            }
         }
       }
       return null;
     });
 
-    if (!priceText) {
-      console.log(`⚠️ Could not find Reliance Digital price selectors for URL: ${url}`);
-      await page.screenshot({ path: 'reliance-error.png', fullPage: true });
-      console.log(`📸 Saved debug screenshot to reliance-error.png`);
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
       return null;
     }
 
-    console.log(`💰 Reliance Digital price found: ${priceText}`);
-    return priceText;
+    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
+    return priceResult.price;
 
   } catch (error) {
-    console.error(`❌ Error scraping Reliance Digital: ${error.message}`);
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
     return null;
   } finally {
     if (browser) await browser.close();
   }
 }
 
-// Nykaa Scraper
+/* ================================================================
+   NYKAA SCRAPER
+   ================================================================ */
+
 async function scrapeNykaa(url) {
+  const store = 'Nykaa';
+  const pid = shortId(url);
+  const startTime = Date.now();
   let browser, page;
+
   try {
     const browserInstance = await launchBrowser();
     browser = browserInstance.browser;
     page = browserInstance.page;
+
+    log('INFO', store, 'Browser launched', { pid });
 
     // Nykaa specifically requires a mobile user agent
     await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1');
@@ -302,7 +461,9 @@ async function scrapeNykaa(url) {
     });
 
     // Wait for network to calm down
+    const navStart = Date.now();
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    log('INFO', store, 'Page loaded', { pid, loadTimeMs: Date.now() - navStart });
 
     // Add a random delay to simulate human loading time
     await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
@@ -314,13 +475,17 @@ async function scrapeNykaa(url) {
         { timeout: 10000 }
       );
     } catch (e) {
-      console.log("Timed out waiting for Rupee symbol to appear on Nykaa.");
+      log('WARN', store, 'Timed out waiting for ₹ symbol', { pid });
     }
 
-    const priceText = await page.evaluate(() => {
+    const priceResult = await page.evaluate(() => {
       // Priority 1: Check the exact classes
-      const classes = ['.css-1jczs19', '.css-1byl9fj', '.css-111z9ua'];
-      for (let selector of classes) {
+      const classes = [
+        ['.css-1jczs19', '.css-1jczs19'],
+        ['.css-1byl9fj', '.css-1byl9fj'],
+        ['.css-111z9ua', '.css-111z9ua']
+      ];
+      for (let [selector, label] of classes) {
         // Use querySelectorAll to get ALL matches (both MRP and selling price)
         const elements = document.querySelectorAll(selector);
         for (let el of elements) {
@@ -328,7 +493,7 @@ async function scrapeNykaa(url) {
             // Check if this specific element has a strikethrough line
             const style = window.getComputedStyle(el);
             if (!style.textDecoration.includes('line-through')) {
-              return el.textContent.trim(); // Return the first one WITHOUT a strikethrough
+              return { price: el.textContent.trim(), selector: label }; // Return the first one WITHOUT a strikethrough
             }
           }
         }
@@ -343,7 +508,7 @@ async function scrapeNykaa(url) {
            // Apply the exact same strikethrough check to our fallback!
            const style = window.getComputedStyle(el);
            if (!style.textDecoration.includes('line-through')) {
-               return el.textContent.trim();
+               return { price: el.textContent.trim(), selector: 'regex-fallback' };
            }
         }
       }
@@ -351,33 +516,35 @@ async function scrapeNykaa(url) {
       return null;
     });
 
-    if (!priceText) {
-      console.log(`⚠️ Could not find Nykaa price selectors for URL: ${url}`);
-      // Take a photograph just in case they have a bot wall too!
-      await page.screenshot({ path: 'nykaa-error.png', fullPage: true });
-      console.log(`📸 Saved debug screenshot to nykaa-error.png`);
+    const elapsed = Date.now() - startTime;
+
+    if (!priceResult) {
+      log('WARN', store, 'No price found', { pid, elapsedMs: elapsed });
       return null;
     }
 
-    return priceText;
+    log('INFO', store, 'Price extracted', { pid, price: priceResult.price, selector: priceResult.selector, elapsedMs: elapsed });
+    return priceResult.price;
 
   } catch (error) {
-    console.error(`Error scraping Nykaa: ${error.message}`);
+    log('ERROR', store, 'Scrape failed', { pid, error: error.message, elapsedMs: Date.now() - startTime });
     return null;
   } finally {
     if (browser) await browser.close();
   }
 }
 
-// --- UPDATED: Main Export ---
+/* ================================================================
+   MAIN DISPATCHER
+   ================================================================ */
+
 async function scrapeProductPrice(url) {
   if (url.includes('amazon')) return await scrapeAmazon(url);
   else if (url.includes('nykaa')) return await scrapeNykaa(url);
   else if (url.includes('snapdeal')) return await scrapeSnapdeal(url);
   else if (url.includes('reliancedigital')) return await scrapeRelianceDigital(url);
-  else if (url.includes('jiomart')) return await scrapeJioMart(url); // <-- Added JioMart
   else {
-    console.warn(`⚠️ Unsupported website attempted: ${url}`);
+    log('WARN', 'Unknown', 'Unsupported website attempted', { url: url.slice(0, 100) });
     return null; 
   }
 }

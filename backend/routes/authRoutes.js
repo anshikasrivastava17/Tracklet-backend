@@ -1,10 +1,11 @@
 const express = require("express");
 const { signupUser, loginUser } = require("../services/userOperations");
+const { authLimiter } = require("../middleware/rateLimiter");
 
 const router = express.Router();
 
-// Signup route
-router.post("/signup", async (req, res) => {
+// Signup route (Rate limited: 5 req/min)
+router.post("/signup", authLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || !email || !password) {
@@ -18,8 +19,8 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-// Login route
-router.post("/login", async (req, res) => {
+// Login route (Rate limited: 5 req/min)
+router.post("/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
