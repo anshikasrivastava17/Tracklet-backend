@@ -665,7 +665,7 @@ async function scrapeNike(url) {
 
 async function scrapeProductPrice(url) {
   if (url.includes('amazon')) return await scrapeAmazon(url);
-  else if (url.includes('nike.com')) return await scrapeNike(url);
+  else if (url.includes('nike.com') || url.includes('nike.in')) return await scrapeNike(url);
   else if (url.includes('nykaa')) return await scrapeNykaa(url);
   else if (url.includes('snapdeal')) return await scrapeSnapdeal(url);
   else if (url.includes('reliancedigital')) return await scrapeRelianceDigital(url);

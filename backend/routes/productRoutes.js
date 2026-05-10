@@ -25,7 +25,7 @@ function cleanEcommerceURL(rawUrl) {
     }
     
     // 2. Nike (strip query params)
-    if (parsedUrl.hostname.includes('nike.com')) {
+    if (parsedUrl.hostname.includes('nike.com') || parsedUrl.hostname.includes('nike.in')) {
       return parsedUrl.origin + parsedUrl.pathname;
     }
 
