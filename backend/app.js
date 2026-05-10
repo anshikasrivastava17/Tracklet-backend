@@ -145,6 +145,6 @@ if (!isLambda && process.env.NODE_ENV !== "test") {
   }
 }
 
-// Export app for testing with supertest
+// Export Express app for testing and expose Lambda handler
 module.exports = app;
 module.exports.handler = handler;

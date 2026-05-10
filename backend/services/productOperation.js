@@ -2,14 +2,32 @@ const docClient = require("../config/dynamoConfig");
 const crypto = require("crypto");
 
 const TABLE_NAME = "Products";
-const GSI_NAME = "User_Email-index"; // GSI to fetch user's tracked products
+const GSI_NAME = "User_Email-index";
 
 // Function to generate Product_ID from URL
 const generateProductID = (productURL) => {
   return crypto.createHash("sha256").update(productURL).digest("hex");
 };
 
-// Add a new product tracking entry
+// Structured logger for CloudWatch
+function log(level, message, meta = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    service: "product",
+    message,
+    ...meta,
+  };
+  if (level === "ERROR") {
+    console.error(JSON.stringify(entry));
+  } else if (level === "WARN") {
+    console.warn(JSON.stringify(entry));
+  } else {
+    console.log(JSON.stringify(entry));
+  }
+}
+
+// Add new product tracking entry
 const addProduct = async (userEmail, productURL, threshold, timeout) => {
   const productID = generateProductID(productURL);
 
@@ -20,25 +38,24 @@ const addProduct = async (userEmail, productURL, threshold, timeout) => {
       User_Email: userEmail,
       Product_URL: productURL,
       Threshold_Value: threshold,
-      Timeout_Time: timeout, // Timeout in months
+      Timeout_Time: timeout,
       Created_At: new Date().toISOString(),
-      NotificationSent: false
+      NotificationSent: false,
     },
   };
 
   try {
     await docClient.put(params).promise();
+    log("INFO", "PRODUCT_ADDED", { productId: productID.slice(0, 12) });
     return { message: "Product added successfully!", Product_ID: productID };
   } catch (error) {
-    console.error("Error adding product:", error);
+    log("ERROR", "PRODUCT_ADD_FAILED", { error: error.message });
     throw new Error("Failed to add product.");
   }
 };
 
-//Get all products tracked by a user using GSI
+// Get all products tracked by a user using GSI
 const getUserProducts = async (userEmail) => {
-  console.log("Fetching products for user:", userEmail);
-
   const params = {
     TableName: TABLE_NAME,
     IndexName: GSI_NAME,
@@ -50,15 +67,15 @@ const getUserProducts = async (userEmail) => {
 
   try {
     const data = await docClient.query(params).promise();
-    console.log("Fetched products:", data.Items);
+    log("INFO", "PRODUCTS_FETCHED", { count: (data.Items || []).length });
     return data.Items || [];
   } catch (error) {
-    console.error("Error fetching user products:", error);
+    log("ERROR", "PRODUCTS_FETCH_FAILED", { error: error.message });
     throw error;
   }
 };
 
-//Remove user from product when timeout is reached
+// Remove user from product
 const removeUserFromProduct = async (userEmail, productID) => {
   const params = {
     TableName: TABLE_NAME,
@@ -67,37 +84,31 @@ const removeUserFromProduct = async (userEmail, productID) => {
 
   try {
     await docClient.delete(params).promise();
+    log("INFO", "PRODUCT_REMOVED", { productId: productID.slice(0, 12) });
     return { message: "User removed from product" };
   } catch (error) {
-    console.error("Error removing user from product:", error);
+    log("ERROR", "PRODUCT_REMOVE_FAILED", { productId: productID.slice(0, 12), error: error.message });
     throw new Error("Failed to remove user from product.");
   }
 };
 
-//Delete product if no users are tracking it
+// Delete product if no users are tracking it
+// Note: Handled mainly by removeUserFromProduct
 const deleteProductIfUnused = async (productID) => {
-  const params = {
-    TableName: TABLE_NAME,
-    Key: { Product_ID: productID },
-    ConditionExpression: "attribute_not_exists(User_Email)", // Only delete if no users exist
-  };
-
-  try {
-    await docClient.delete(params).promise();
-    return { message: "Product deleted as no users are tracking it" };
-  } catch (error) {
-    console.error("Error deleting unused product:", error);
-    return { message: "Product still tracked by users, not deleted" };
-  }
+  // Best-effort cleanup
+  log("INFO", "PRODUCT_CLEANUP_SKIPPED", {
+    productId: productID.slice(0, 12),
+    reason: "composite-key table — removeUserFromProduct already deleted the record",
+  });
+  return { message: "Cleanup handled by removeUserFromProduct" };
 };
 
-//Batch cleanup expired products
+// Batch cleanup expired products
 const cleanupExpiredProducts = async () => {
   const now = new Date();
   let expiredProducts = [];
 
   try {
-    // Scan all products (Consider paginating for large data sets)
     const allProducts = await docClient.scan({ TableName: TABLE_NAME }).promise();
 
     for (const product of allProducts.Items) {
@@ -112,11 +123,10 @@ const cleanupExpiredProducts = async () => {
     }
 
     if (expiredProducts.length === 0) {
-      console.log("No expired products found.");
+      log("INFO", "CLEANUP_NOTHING_EXPIRED", {});
       return { message: "No expired products to clean." };
     }
 
-    // Perform batch delete
     const deleteRequests = expiredProducts.map((product) => ({
       DeleteRequest: {
         Key: { Product_ID: product.Product_ID, User_Email: product.User_Email },
@@ -126,15 +136,10 @@ const cleanupExpiredProducts = async () => {
     const batchParams = { RequestItems: { [TABLE_NAME]: deleteRequests } };
     await docClient.batchWrite(batchParams).promise();
 
-    // Delete products that have no users left tracking them
-    for (const product of expiredProducts) {
-      await deleteProductIfUnused(product.Product_ID);
-    }
-
-    console.log(`✅ Cleanup completed: ${expiredProducts.length} products removed.`);
+    log("INFO", "CLEANUP_COMPLETE", { removed: expiredProducts.length });
     return { message: `Cleaned up ${expiredProducts.length} expired products.` };
   } catch (error) {
-    console.error("Error during cleanup:", error);
+    log("ERROR", "CLEANUP_FAILED", { error: error.message });
     throw new Error("Failed to cleanup expired products.");
   }
 };

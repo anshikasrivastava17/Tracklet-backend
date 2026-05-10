@@ -4,9 +4,9 @@
  * Validates request bodies for product tracking endpoints.
  */
 
+// Supported stores (must match scraperService.js)
 const SUPPORTED_DOMAINS = [
-  'amazon', 'flipkart', 'ajio', 'nykaa', 'nike',
-  'snapdeal', 'reliancedigital', 'jiomart', 'myntra', 'meesho'
+  'amazon', 'nykaa', 'snapdeal', 'reliancedigital',
 ];
 
 /**
