@@ -590,13 +590,26 @@ async function scrapeFlipkart(url) {
         return false;
       }
 
-      // Priority 1: Flipkart's current layout selling price selectors
+      const priceRegex = /^₹\s?\d{1,3}(,\d{2,3})*/;
+
+      // Strategy 1: Flipkart's stable font attribute (survives class obfuscation)
+      // The selling price element uses font="default-fk-font-m" or similar fk-font attributes
+      const fontEls = document.querySelectorAll('[font*="fk-font"]');
+      for (const el of fontEls) {
+        if (el.textContent && el.textContent.includes('₹') && !isStrikethrough(el)) {
+          const text = el.textContent.trim();
+          if (priceRegex.test(text)) {
+            return { price: text, selector: 'font-attr' };
+          }
+        }
+      }
+
+      // Strategy 2: Known class selectors (may work on older Flipkart layouts)
       const selectors = [
-        ['div.Nx9bqj.CxhGGd', 'Nx9bqj CxhGGd'],          // New Flipkart PDP
-        ['div.Nx9bqj', 'Nx9bqj'],                          // Alternate new layout
-        ['div._30jeq3._16Jk6d', '_30jeq3 _16Jk6d'],        // Older Flipkart PDP
-        ['div._30jeq3', '_30jeq3'],                          // Generic old layout
-        ['div._25b18c .CEmiEU span', 'CEmiEU span'],        // Another variant
+        ['div.Nx9bqj.CxhGGd', 'Nx9bqj CxhGGd'],
+        ['div.Nx9bqj', 'Nx9bqj'],
+        ['div._30jeq3._16Jk6d', '_30jeq3 _16Jk6d'],
+        ['div._30jeq3', '_30jeq3'],
       ];
 
       for (const [selector, label] of selectors) {
@@ -608,16 +621,27 @@ async function scrapeFlipkart(url) {
         }
       }
 
-      // Priority 2: Regex fallback — find ₹X,XXX in leaf nodes
-      const allElements = Array.from(document.querySelectorAll('span, div'));
-      const priceRegex = /^₹\s?\d{1,3}(,\d{2,3})*/;
+      // Strategy 3: Font-size heuristic — the selling price is the LARGEST
+      // non-struck-through ₹ element on the page
+      const allPriceEls = Array.from(document.querySelectorAll('span, div'))
+        .filter(el => {
+          if (!el.textContent || !priceRegex.test(el.textContent.trim())) return false;
+          if (el.children.length > 0) return false;
+          if (isStrikethrough(el)) return false;
+          // Exclude EMI, offer, coupon text
+          const parent = el.closest('[class*="emi"], [class*="coupon"], [class*="offer"], [class*="bank"]');
+          if (parent) return false;
+          return true;
+        })
+        .map(el => ({
+          el,
+          fontSize: parseFloat(window.getComputedStyle(el).fontSize) || 0,
+          text: el.textContent.trim(),
+        }))
+        .sort((a, b) => b.fontSize - a.fontSize);
 
-      for (const el of allElements) {
-        if (el.children.length === 0 && el.textContent && priceRegex.test(el.textContent.trim())) {
-          if (!isStrikethrough(el)) {
-            return { price: el.textContent.trim(), selector: 'regex-fallback' };
-          }
-        }
+      if (allPriceEls.length > 0) {
+        return { price: allPriceEls[0].text, selector: `font-size-heuristic (${allPriceEls[0].fontSize}px)` };
       }
 
       return null;
