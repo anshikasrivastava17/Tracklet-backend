@@ -448,8 +448,8 @@ async function scrapeNykaa(url) {
 
     log('INFO', store, 'Browser launched', { pid });
 
-    // Nykaa specifically requires a mobile user agent
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1');
+    // Use a desktop user agent so the scraped price matches the desktop site
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       // Allowing stylesheets just in case Nykaa's mobile layout relies on them to render text blocks
@@ -533,6 +533,7 @@ async function scrapeNykaa(url) {
     if (browser) await browser.close();
   }
 }
+
 
 /* ================================================================
    MAIN DISPATCHER

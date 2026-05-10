@@ -103,7 +103,7 @@ if (isLambda) {
   server = awsServerlessExpress.createServer(app);
 }
 
-exports.handler = async (event, context) => {
+const handler = async (event, context) => {
   // 🕒 EventBridge trigger
   if (event?.source === "aws.events") {
     console.log("🕒 EventBridge triggered: Running monitoring...");
@@ -124,7 +124,7 @@ exports.handler = async (event, context) => {
 /* =========================
    LOCAL DEVELOPMENT MODE
 ========================= */
-if (!isLambda) {
+if (!isLambda && process.env.NODE_ENV !== "test") {
   const PORT = process.env.PORT || 3000;
 
   app.listen(PORT, () => {
@@ -146,5 +146,5 @@ if (!isLambda) {
 }
 
 // Export Express app for testing and expose Lambda handler
-app.handler = exports.handler;
 module.exports = app;
+module.exports.handler = handler;

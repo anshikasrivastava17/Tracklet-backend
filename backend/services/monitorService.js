@@ -63,16 +63,48 @@ async function updateNotificationSent(productID, userEmail) {
       User_Email: userEmail,
     },
     UpdateExpression: "SET NotificationSent = :sent",
+    ConditionExpression: "NotificationSent = :false OR attribute_not_exists(NotificationSent)",
     ExpressionAttributeValues: {
       ":sent": true,
+      ":false": false,
     },
   };
 
   try {
     await docClient.update(params).promise();
     log('INFO', 'NOTIFICATION_FLAGGED', { productId: productID.slice(0, 12) });
+    return true;
   } catch (error) {
+    if (error.code === 'ConditionalCheckFailedException') {
+      log('INFO', 'NOTIFICATION_ALREADY_SENT_CONCURRENT', { productId: productID.slice(0, 12) });
+      return false;
+    }
     log('ERROR', 'NOTIFICATION_FLAG_FAILED', { productId: productID.slice(0, 12), error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Reverts the NotificationSent flag to false if email sending fails.
+ */
+async function revertNotificationSent(productID, userEmail) {
+  const params = {
+    TableName: PRODUCTS_TABLE,
+    Key: {
+      Product_ID: productID,
+      User_Email: userEmail,
+    },
+    UpdateExpression: "SET NotificationSent = :sent",
+    ExpressionAttributeValues: {
+      ":sent": false,
+    },
+  };
+
+  try {
+    await docClient.update(params).promise();
+    log('INFO', 'NOTIFICATION_REVERTED', { productId: productID.slice(0, 12) });
+  } catch (error) {
+    log('ERROR', 'NOTIFICATION_REVERT_FAILED', { productId: productID.slice(0, 12), error: error.message });
   }
 }
 
@@ -195,21 +227,27 @@ async function monitorProductsAndScrape() {
               user: User_Email,
             });
 
-            // ✅ Controlled email sending
-            if (process.env.SEND_EMAILS === "true") {
-              try {
-                await sendPriceDropAlert(User_Email, Product_URL, numericPrice);
-                stats.emailsSent++;
-                log('INFO', 'EMAIL_SENT', { runId, pid, user: User_Email });
-              } catch (emailErr) {
-                log('ERROR', 'EMAIL_FAILED', { runId, pid, user: User_Email, error: emailErr.message });
+            // Atomically mark as notified BEFORE sending to prevent duplicates
+            const claimed = await updateNotificationSent(Product_ID, User_Email);
+
+            if (claimed) {
+              // ✅ Controlled email sending
+              if (process.env.SEND_EMAILS === "true") {
+                try {
+                  await sendPriceDropAlert(User_Email, Product_URL, numericPrice);
+                  stats.emailsSent++;
+                  log('INFO', 'EMAIL_SENT', { runId, pid, user: User_Email });
+                } catch (emailErr) {
+                  log('ERROR', 'EMAIL_FAILED', { runId, pid, user: User_Email, error: emailErr.message });
+                  // Revert the flag so the system can try again later
+                  await revertNotificationSent(Product_ID, User_Email);
+                }
+              } else {
+                log('INFO', 'EMAIL_SKIPPED', { runId, pid, reason: 'SEND_EMAILS=false' });
               }
             } else {
-              log('INFO', 'EMAIL_SKIPPED', { runId, pid, reason: 'SEND_EMAILS=false' });
+              log('INFO', 'EMAIL_SKIPPED_CONCURRENT', { runId, pid, user: User_Email });
             }
-
-            // Mark as notified
-            await updateNotificationSent(Product_ID, User_Email);
 
           }
 
