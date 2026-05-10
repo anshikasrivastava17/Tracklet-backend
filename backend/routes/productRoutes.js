@@ -24,12 +24,7 @@ function cleanEcommerceURL(rawUrl) {
       }
     }
     
-    // 2. Nike (strip query params)
-    if (parsedUrl.hostname.includes('nike.com') || parsedUrl.hostname.includes('nike.in')) {
-      return parsedUrl.origin + parsedUrl.pathname;
-    }
-
-    // 4. Strip query parameters for standard sites (Removes ?utm_source=app etc.)
+    // 2. Strip query parameters for standard sites (Removes ?utm_source=app etc.)
     if (
       parsedUrl.hostname.includes('snapdeal') || 
       parsedUrl.hostname.includes('nykaa') || 
