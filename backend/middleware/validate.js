@@ -4,10 +4,7 @@
  * Validates request bodies for product tracking endpoints.
  */
 
-/**
- * SUPPORTED_DOMAINS must stay in sync with scraperService.js dispatcher.
- * Only stores with a real scraper implementation are listed here.
- */
+// Supported stores (must match scraperService.js)
 const SUPPORTED_DOMAINS = [
   'amazon', 'nykaa', 'snapdeal', 'reliancedigital',
 ];

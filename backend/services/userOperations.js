@@ -7,7 +7,7 @@ const { sendPasswordResetEmail } = require("./emailService");
 const TABLE_NAME = "Users";
 const OTP_EXPIRY_MINUTES = 15;
 
-// JWT secret from environment — MUST be set in Lambda env vars and .env locally
+// Secret key for JWT
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET && !process.env.AWS_EXECUTION_ENV) {
   console.warn(JSON.stringify({
@@ -18,7 +18,7 @@ if (!JWT_SECRET && !process.env.AWS_EXECUTION_ENV) {
   }));
 }
 
-/** Structured JSON logger — CloudWatch-compatible. */
+// Structured logger for CloudWatch
 function log(level, message, meta = {}) {
   const entry = {
     timestamp: new Date().toISOString(),
@@ -36,9 +36,7 @@ function log(level, message, meta = {}) {
   }
 }
 
-/* ============================================================
-   SIGNUP
-   ============================================================ */
+// Signup new user
 const signupUser = async ({ name, email, password }) => {
   if (!name || !email || !password) {
     const error = new Error("All fields are required");
@@ -80,9 +78,7 @@ const signupUser = async ({ name, email, password }) => {
   }
 };
 
-/* ============================================================
-   LOGIN
-   ============================================================ */
+// Login existing user
 const loginUser = async ({ email, password }) => {
   if (!email || !password) {
     const error = new Error("Email and password are required");
@@ -123,9 +119,7 @@ const loginUser = async ({ email, password }) => {
   }
 };
 
-/* ============================================================
-   FORGOT PASSWORD — Request OTP
-   ============================================================ */
+// Request OTP for password reset
 const requestPasswordReset = async (email) => {
   const normalizedEmail = email.toLowerCase();
 
@@ -134,17 +128,17 @@ const requestPasswordReset = async (email) => {
       .get({ TableName: TABLE_NAME, Key: { Email: normalizedEmail } })
       .promise();
 
-    // Always return a generic message — prevents email enumeration
+    // Return success even if email not found to prevent enumeration
     if (!result.Item) {
       log("INFO", "FORGOT_PASSWORD_UNKNOWN_EMAIL", {});
       return { message: "If that email is registered, a reset code has been sent." };
     }
 
-    // Generate a 6-digit numeric OTP (crypto-secure)
+    // Generate 6-digit OTP
     const otp = String(crypto.randomInt(100000, 999999));
     const expiry = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000).toISOString();
 
-    // Hash the OTP before storing — never store raw OTP
+    // Hash OTP before storing
     const otpHash = await bcrypt.hash(otp, 10);
 
     await docClient.update({
@@ -157,7 +151,7 @@ const requestPasswordReset = async (email) => {
       },
     }).promise();
 
-    // Send email — OTP is NOT logged
+    // Send OTP email
     await sendPasswordResetEmail(normalizedEmail, otp);
 
     log("INFO", "FORGOT_PASSWORD_OTP_SENT", {});
@@ -168,9 +162,7 @@ const requestPasswordReset = async (email) => {
   }
 };
 
-/* ============================================================
-   RESET PASSWORD — Validate OTP + update password
-   ============================================================ */
+// Validate OTP and reset password
 const resetPassword = async (email, otp, newPassword) => {
   const normalizedEmail = email.toLowerCase();
 
@@ -181,7 +173,7 @@ const resetPassword = async (email, otp, newPassword) => {
 
     const user = result.Item;
 
-    // Validate: user exists, OTP is set, OTP is not expired
+    // Validate user, OTP presence, and expiry
     if (
       !user ||
       !user.PasswordResetOTP ||
@@ -194,7 +186,7 @@ const resetPassword = async (email, otp, newPassword) => {
       throw error;
     }
 
-    // Verify OTP hash — OTP is NOT logged
+    // Verify OTP hash
     const isOTPValid = await bcrypt.compare(otp, user.PasswordResetOTP);
     if (!isOTPValid) {
       const error = new Error("Invalid or expired reset code");
@@ -207,7 +199,7 @@ const resetPassword = async (email, otp, newPassword) => {
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    // Update password and atomically clear the OTP fields
+    // Update password and clear OTP fields
     await docClient.update({
       TableName: TABLE_NAME,
       Key: { Email: normalizedEmail },

@@ -9,7 +9,7 @@ const generateProductID = (productURL) => {
   return crypto.createHash("sha256").update(productURL).digest("hex");
 };
 
-/** Structured JSON logger — CloudWatch-compatible. */
+// Structured logger for CloudWatch
 function log(level, message, meta = {}) {
   const entry = {
     timestamp: new Date().toISOString(),
@@ -27,7 +27,7 @@ function log(level, message, meta = {}) {
   }
 }
 
-// Add a new product tracking entry
+// Add new product tracking entry
 const addProduct = async (userEmail, productURL, threshold, timeout) => {
   const productID = generateProductID(productURL);
 
@@ -75,7 +75,7 @@ const getUserProducts = async (userEmail) => {
   }
 };
 
-// Remove user from product when user requests delete or timeout is reached
+// Remove user from product
 const removeUserFromProduct = async (userEmail, productID) => {
   const params = {
     TableName: TABLE_NAME,
@@ -92,13 +92,10 @@ const removeUserFromProduct = async (userEmail, productID) => {
   }
 };
 
-// Delete product record if no users are tracking it
-// NOTE: This is only safe to call after removeUserFromProduct has already
-// removed the user — the composite key (Product_ID, User_Email) means a record
-// cannot exist without an associated User_Email anyway.
+// Delete product if no users are tracking it
+// Note: Handled mainly by removeUserFromProduct
 const deleteProductIfUnused = async (productID) => {
-  // This function is called as a best-effort cleanup; failures are non-fatal.
-  // The real user-driven removal is handled by removeUserFromProduct above.
+  // Best-effort cleanup
   log("INFO", "PRODUCT_CLEANUP_SKIPPED", {
     productId: productID.slice(0, 12),
     reason: "composite-key table — removeUserFromProduct already deleted the record",

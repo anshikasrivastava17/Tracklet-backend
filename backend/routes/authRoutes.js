@@ -39,8 +39,7 @@ router.post("/login", authLimiter, async (req, res) => {
   }
 });
 
-// Forgot password — sends OTP to registered email (Rate limited)
-// Always returns a generic 200 response to prevent email enumeration.
+// Forgot password — sends OTP to registered email
 router.post("/forgot-password", authLimiter, async (req, res) => {
   try {
     const { email } = req.body;
@@ -51,14 +50,14 @@ router.post("/forgot-password", authLimiter, async (req, res) => {
     const result = await requestPasswordReset(email.trim());
     res.status(200).json({ message: result.message });
   } catch (err) {
-    // Return generic message even on unexpected errors — don't leak internals
+    // Return generic message even on unexpected errors
     res.status(200).json({
       message: "If that email is registered, a reset code has been sent.",
     });
   }
 });
 
-// Reset password — validates OTP, sets new password (Rate limited)
+// Reset password — validates OTP and sets new password
 router.post("/reset-password", authLimiter, async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;

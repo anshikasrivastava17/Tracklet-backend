@@ -8,7 +8,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-/** Structured JSON logger — matches monitorService / scraperService pattern. */
+// Structured logger for CloudWatch
 function log(level, message, meta = {}) {
   const entry = {
     timestamp: new Date().toISOString(),
@@ -24,9 +24,7 @@ function log(level, message, meta = {}) {
   }
 }
 
-/**
- * Send a price-drop alert to a user.
- */
+// Send price-drop alert email
 async function sendPriceDropAlert(userEmail, productUrl, currentPrice) {
   const mailOptions = {
     from: process.env.SMTP_EMAIL,
@@ -44,10 +42,7 @@ async function sendPriceDropAlert(userEmail, productUrl, currentPrice) {
   log('INFO', 'EMAIL_SENT', { type: 'PRICE_DROP_ALERT', to: userEmail });
 }
 
-/**
- * Send a password reset OTP to a user.
- * The OTP value is NOT logged.
- */
+// Send password reset OTP email
 async function sendPasswordResetEmail(toEmail, otp) {
   const mailOptions = {
     from: process.env.SMTP_EMAIL,
