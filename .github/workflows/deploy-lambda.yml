@@ -13,6 +13,10 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: '20.x'
+      - name: Install Dependencies
+        run: |
+          cd backend
+          npm install
       - name: Run Handler Smoke Check
         run: |
           cd backend
@@ -27,7 +31,6 @@ jobs:
       - name: Run Tests
         run: |
           cd backend
-          npm install
           npm test
 
 
